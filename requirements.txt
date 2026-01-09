@@ -1,0 +1,6 @@
+numpy>=1.19.0
+# CuPy is optional - install manually based on your CUDA version:
+# For Windows: pip install cupy-cuda11x (CUDA 11.x) or cupy-cuda12x (CUDA 12.x)
+# For Linux/Mac: pip install cupy-cuda11x
+# If no GPU available, CuPy is not required - code will use NumPy automatically
+
