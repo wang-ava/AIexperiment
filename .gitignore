@@ -34,12 +34,13 @@ ENV/
 *~
 
 # Reports and outputs
-reports/
 reports_1/
 *.txt
 !requirements.txt
 !README.md
 !NEW_MODELS_README.md
+!reports/
+!reports/*.txt
 
 # Dataset (too large for git)
 dataset/
