@@ -1,316 +1,132 @@
 """
-LeNet-5 神经网络
+LeNet-5 神经网络 (PyTorch版本)
 经典的卷积神经网络架构，由Yann LeCun于1998年提出
 原始用于手写数字识别，这里应用于Fashion-MNIST
-支持 GPU 加速（通过 CuPy）
-使用 im2col 方法优化卷积计算
 """
-from gpu_utils import xp, to_gpu, to_cpu, is_gpu_available
-import numpy as np  # 仍需要 numpy 用于某些操作
-from utils import load_fashion_mnist, one_hot_encode, create_mini_batches, get_class_name, generate_training_report, set_random_seed, im2col, col2im
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+import numpy as np
+from gpu_utils import get_device, to_cpu, is_gpu_available, get_gpu_memory_usage, clear_gpu_memory
+from utils import load_fashion_mnist, create_mini_batches, get_class_name, generate_training_report, set_random_seed
 
 
-class LeNet5:
+class LeNet5(nn.Module):
     """
-    LeNet-5卷积神经网络
-    结构: Conv1(6) -> Sigmoid -> AvgPool -> Conv2(16) -> Sigmoid -> AvgPool -> 
-          Flatten -> FC1(120) -> Sigmoid -> FC2(84) -> Sigmoid -> FC3(10)
+    LeNet-5卷积神经网络（PyTorch版本）
+    结构: Conv1(6) -> ReLU -> AvgPool -> Conv2(16) -> ReLU -> AvgPool -> 
+          Flatten -> FC1(120) -> ReLU -> FC2(84) -> ReLU -> FC3(10)
+    使用 ReLU 激活函数和 He 初始化
     """
     
-    def __init__(self, learning_rate=0.01):
+    def __init__(self, learning_rate=0.001):
         """
         初始化LeNet-5
         
         参数:
-            learning_rate: 学习率
+            learning_rate: 学习率（默认0.001）
         """
+        super(LeNet5, self).__init__()
+        
         self.learning_rate = learning_rate
+        self.device = get_device()
         
-        # 卷积层1: 6个5x5卷积核
-        self.W1 = xp.random.randn(6, 1, 5, 5) * 0.1
-        self.b1 = xp.zeros((6, 1))
+        # 卷积层1: 1 -> 6, kernel=5x5
+        self.conv1 = nn.Conv2d(1, 6, kernel_size=5, stride=1, padding=0)
         
-        # 卷积层2: 16个5x5卷积核
-        self.W2 = xp.random.randn(16, 6, 5, 5) * 0.1
-        self.b2 = xp.zeros((16, 1))
+        # 平均池化层1: 2x2
+        self.avgpool1 = nn.AvgPool2d(kernel_size=2, stride=2)
+        
+        # 卷积层2: 6 -> 16, kernel=5x5
+        self.conv2 = nn.Conv2d(6, 16, kernel_size=5, stride=1, padding=0)
+        
+        # 平均池化层2: 2x2
+        self.avgpool2 = nn.AvgPool2d(kernel_size=2, stride=2)
         
         # 全连接层1: 16*4*4 -> 120
-        self.W3 = xp.random.randn(16 * 4 * 4, 120) * 0.1
-        self.b3 = xp.zeros((1, 120))
+        self.fc1 = nn.Linear(16 * 4 * 4, 120)
         
         # 全连接层2: 120 -> 84
-        self.W4 = xp.random.randn(120, 84) * 0.1
-        self.b4 = xp.zeros((1, 84))
+        self.fc2 = nn.Linear(120, 84)
         
         # 输出层: 84 -> 10
-        self.W5 = xp.random.randn(84, 10) * 0.1
-        self.b5 = xp.zeros((1, 10))
+        self.fc3 = nn.Linear(84, 10)
         
-        # 用于反向传播的缓存
-        self.cache = {}
+        # 初始化权重
+        self._initialize_weights()
+        
+        self.to(self.device)
     
-    def sigmoid(self, z):
-        """Sigmoid激活函数"""
-        return 1 / (1 + xp.exp(-xp.clip(z, -500, 500)))
+    def _initialize_weights(self):
+        """使用He初始化（适用于ReLU）"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
     
-    def sigmoid_derivative(self, a):
-        """Sigmoid导数"""
-        return a * (1 - a)
-    
-    def softmax(self, z):
-        """Softmax函数"""
-        exp_z = xp.exp(z - xp.max(z, axis=1, keepdims=True))
-        return exp_z / xp.sum(exp_z, axis=1, keepdims=True)
-    
-    def conv2d(self, X, W, b, stride=1, padding=0):
-        """
-        2D卷积操作（使用im2col优化）
-        
-        参数:
-            X: 输入, shape (batch, in_channels, height, width)
-            W: 卷积核, shape (out_channels, in_channels, kh, kw)
-            b: 偏置, shape (out_channels, 1)
-            stride: 步长
-            padding: 填充
-        
-        返回:
-            输出特征图
-        """
-        batch_size, in_channels, height, width = X.shape
-        out_channels, _, kh, kw = W.shape
-        
-        # 使用im2col将输入转换为列矩阵
-        col, out_h, out_w = im2col(X, kh, kw, stride, padding)
-        
-        # 将卷积核reshape为矩阵
-        W_col = W.reshape(out_channels, -1).T
-        
-        # 矩阵乘法执行卷积
-        output = xp.dot(col, W_col) + b.T
-        
-        # Reshape回原始形状
-        output = output.reshape(batch_size, out_h, out_w, out_channels)
-        output = output.transpose(0, 3, 1, 2)
-        
-        return output
-    
-    def avg_pool2d(self, X, pool_size=2, stride=2):
-        """
-        2D平均池化（向量化优化）
-        
-        参数:
-            X: 输入
-            pool_size: 池化窗口大小
-            stride: 步长
-        
-        返回:
-            池化输出
-        """
-        batch_size, channels, height, width = X.shape
-        
-        # 使用im2col展开
-        col, out_h, out_w = im2col(X, pool_size, pool_size, stride, 0)
-        col = col.reshape(-1, pool_size * pool_size)
-        
-        # 对每个池化窗口取平均值
-        output = xp.mean(col, axis=1)
-        
-        # Reshape回原始形状
-        output = output.reshape(batch_size, out_h, out_w, channels)
-        output = output.transpose(0, 3, 1, 2)
-        
-        return output
-    
-    def forward(self, X):
+    def forward(self, x):
         """
         前向传播
         
         参数:
-            X: 输入数据, shape (batch_size, 784)
+            x: 输入图像, shape (batch, 1, 28, 28)
         
         返回:
-            输出, shape (batch_size, 10)
+            output: 输出logits, shape (batch, 10)
         """
-        batch_size = X.shape[0]
+        # Conv1 -> ReLU -> AvgPool
+        x = self.avgpool1(F.relu(self.conv1(x)))  # (batch, 6, 12, 12)
         
-        # 重塑输入为图像格式 (batch, 1, 28, 28)
-        X = X.reshape(batch_size, 1, 28, 28)
-        self.cache['X'] = X
+        # Conv2 -> ReLU -> AvgPool
+        x = self.avgpool2(F.relu(self.conv2(x)))  # (batch, 16, 4, 4)
         
-        # 第一层卷积 + Sigmoid + 平均池化
-        # 输入: (batch, 1, 28, 28) -> 输出: (batch, 6, 24, 24)
-        C1 = self.conv2d(X, self.W1, self.b1, stride=1, padding=0)
-        self.cache['C1'] = C1
+        # Flatten
+        x = x.view(x.size(0), -1)  # (batch, 16*4*4)
         
-        A1 = self.sigmoid(C1)
-        self.cache['A1'] = A1
+        # FC1 -> ReLU
+        x = F.relu(self.fc1(x))  # (batch, 120)
         
-        # 平均池化: (batch, 6, 24, 24) -> (batch, 6, 12, 12)
-        S1 = self.avg_pool2d(A1, pool_size=2, stride=2)
-        self.cache['S1'] = S1
+        # FC2 -> ReLU
+        x = F.relu(self.fc2(x))  # (batch, 84)
         
-        # 第二层卷积 + Sigmoid + 平均池化
-        # 输入: (batch, 6, 12, 12) -> 输出: (batch, 16, 8, 8)
-        C2 = self.conv2d(S1, self.W2, self.b2, stride=1, padding=0)
-        self.cache['C2'] = C2
+        # FC3 (输出层，不使用激活函数，使用交叉熵损失)
+        x = self.fc3(x)  # (batch, 10)
         
-        A2 = self.sigmoid(C2)
-        self.cache['A2'] = A2
-        
-        # 平均池化: (batch, 16, 8, 8) -> (batch, 16, 4, 4)
-        S2 = self.avg_pool2d(A2, pool_size=2, stride=2)
-        self.cache['S2'] = S2
-        
-        # 展平: (batch, 16, 4, 4) -> (batch, 256)
-        F = S2.reshape(batch_size, -1)
-        self.cache['F'] = F
-        
-        # 全连接层1: (batch, 256) -> (batch, 120)
-        Z3 = xp.dot(F, self.W3) + self.b3
-        A3 = self.sigmoid(Z3)
-        self.cache['A3'] = A3
-        
-        # 全连接层2: (batch, 120) -> (batch, 84)
-        Z4 = xp.dot(A3, self.W4) + self.b4
-        A4 = self.sigmoid(Z4)
-        self.cache['A4'] = A4
-        
-        # 输出层: (batch, 84) -> (batch, 10)
-        Z5 = xp.dot(A4, self.W5) + self.b5
-        self.cache['Z5'] = Z5
-        
-        return Z5
+        return x
     
-    def backward(self, y):
-        """
-        反向传播
-        
-        参数:
-            y: 真实标签
-        """
-        batch_size = y.shape[0]
-        
-        # 将标签转换为one-hot编码
-        y_one_hot = one_hot_encode(y, 10)
-        y_one_hot = to_gpu(y_one_hot) if is_gpu_available() else y_one_hot
-        
-        # 输出层梯度（交叉熵+softmax）
-        A5 = self.softmax(self.cache['Z5'])
-        dZ5 = A5 - y_one_hot
-        
-        # 全连接层3的梯度
-        dW5 = xp.dot(self.cache['A4'].T, dZ5) / batch_size
-        db5 = xp.sum(dZ5, axis=0, keepdims=True) / batch_size
-        dA4 = xp.dot(dZ5, self.W5.T)
-        
-        # 全连接层2的梯度
-        dZ4 = dA4 * self.sigmoid_derivative(self.cache['A4'])
-        dW4 = xp.dot(self.cache['A3'].T, dZ4) / batch_size
-        db4 = xp.sum(dZ4, axis=0, keepdims=True) / batch_size
-        dA3 = xp.dot(dZ4, self.W4.T)
-        
-        # 全连接层1的梯度
-        dZ3 = dA3 * self.sigmoid_derivative(self.cache['A3'])
-        dW3 = xp.dot(self.cache['F'].T, dZ3) / batch_size
-        db3 = xp.sum(dZ3, axis=0, keepdims=True) / batch_size
-        dF = xp.dot(dZ3, self.W3.T)
-        
-        # 反向传播到卷积层（简化版本）
-        dS2 = dF.reshape(self.cache['S2'].shape)
-        dA2 = self._avg_pool2d_backward(dS2, self.cache['A2'])
-        dC2 = dA2 * self.sigmoid_derivative(self.cache['A2'])
-        dW2, db2 = self._conv2d_backward(dC2, self.cache['S1'], self.W2)
-        
-        dS1 = self._conv2d_input_backward(dC2, self.cache['S1'], self.W2)
-        dA1 = self._avg_pool2d_backward(dS1, self.cache['A1'])
-        dC1 = dA1 * self.sigmoid_derivative(self.cache['A1'])
-        dW1, db1 = self._conv2d_backward(dC1, self.cache['X'], self.W1)
-        
-        # 更新参数
-        self.W5 -= self.learning_rate * dW5
-        self.b5 -= self.learning_rate * db5
-        self.W4 -= self.learning_rate * dW4
-        self.b4 -= self.learning_rate * db4
-        self.W3 -= self.learning_rate * dW3
-        self.b3 -= self.learning_rate * db3
-        self.W2 -= self.learning_rate * dW2
-        self.b2 -= self.learning_rate * db2
-        self.W1 -= self.learning_rate * dW1
-        self.b1 -= self.learning_rate * db1
-    
-    def _conv2d_backward(self, dout, X, W):
-        """卷积层反向传播（计算权重梯度）- 向量化优化"""
-        batch_size, out_channels, out_h, out_w = dout.shape
-        _, in_channels, kh, kw = W.shape
-        
-        # 计算偏置梯度
-        db = xp.sum(dout, axis=(0, 2, 3)).reshape(-1, 1) / batch_size
-        
-        # 使用im2col将输入转换为列矩阵
-        col, _, _ = im2col(X, kh, kw, stride=1, padding=0)
-        
-        # Reshape梯度
-        dout_reshaped = dout.transpose(0, 2, 3, 1).reshape(-1, out_channels)
-        
-        # 计算权重梯度（矩阵乘法）
-        dW = xp.dot(col.T, dout_reshaped)
-        dW = dW.T.reshape(out_channels, in_channels, kh, kw) / batch_size
-        
-        return dW, db
-    
-    def _conv2d_input_backward(self, dout, X, W):
-        """卷积层反向传播（计算输入梯度）- 向量化优化"""
-        batch_size, out_channels, out_h, out_w = dout.shape
-        _, in_channels, kh, kw = W.shape
-        
-        # Reshape梯度
-        dout_reshaped = dout.transpose(0, 2, 3, 1).reshape(-1, out_channels)
-        
-        # 将卷积核reshape为矩阵
-        W_col = W.reshape(out_channels, -1).T
-        
-        # 计算列矩阵的梯度
-        dcol = xp.dot(dout_reshaped, W_col.T)
-        
-        # 使用col2im转换回原始形状
-        dX = col2im(dcol, X.shape, kh, kw, stride=1, padding=0)
-        
-        return dX
-    
-    def _avg_pool2d_backward(self, dout, X, pool_size=2, stride=2):
-        """平均池化反向传播 - 向量化优化"""
-        batch_size, channels, out_h, out_w = dout.shape
-        
-        # Reshape梯度并扩展
-        dout_expanded = dout.transpose(0, 2, 3, 1).reshape(-1, 1)
-        
-        # 创建梯度矩阵（每个元素平均分配）
-        dcol = xp.tile(dout_expanded, (1, pool_size * pool_size)) / (pool_size * pool_size)
-        
-        # 使用col2im转换回原始形状
-        dX = col2im(dcol, X.shape, pool_size, pool_size, stride, 0)
-        
-        return dX
-    
-    def train(self, X_train, y_train, X_test, y_test, epochs=10, batch_size=128):
+    def train_model(self, X_train, y_train, X_test, y_test, epochs=10, batch_size=128):
         """
         训练模型
         
         参数:
-            X_train: 训练数据
-            y_train: 训练标签
-            X_test: 测试数据
-            y_test: 测试标签
+            X_train: 训练数据 (numpy数组, shape: [N, 784])
+            y_train: 训练标签 (numpy数组)
+            X_test: 测试数据 (numpy数组, shape: [N, 784])
+            y_test: 测试标签 (numpy数组)
             epochs: 训练轮数
             batch_size: 批次大小
         
         返回:
             history: 训练历史记录
         """
-        # 将数据转移到 GPU（如果使用 GPU）
-        X_train = to_gpu(X_train)
-        X_test = to_gpu(X_test)
+        # 将数据reshape为图像格式并转换为张量
+        X_train_img = X_train.reshape(-1, 1, 28, 28).astype(np.float32)
+        X_test_img = X_test.reshape(-1, 1, 28, 28).astype(np.float32)
         
+        X_train_tensor = torch.FloatTensor(X_train_img).to(self.device)
+        y_train_tensor = torch.LongTensor(y_train).to(self.device)
+        X_test_tensor = torch.FloatTensor(X_test_img).to(self.device)
+        y_test_tensor = torch.LongTensor(y_test).to(self.device)
+        
+        # 使用交叉熵损失和Adam优化器（带权重衰减）
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(self.parameters(), lr=self.learning_rate, weight_decay=1e-4)
+        # 添加学习率调度器（更激进的衰减）
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-6)
+        
+        # 记录训练历史
         history = {
             'train_acc': [],
             'test_acc': [],
@@ -318,50 +134,112 @@ class LeNet5:
             'batch_size': batch_size
         }
         
+        self.train()  # 设置为训练模式
+        
         for epoch in range(epochs):
+            # 创建mini-batches
             batches = create_mini_batches(X_train, y_train, batch_size)
             
-            for i, (X_batch, y_batch) in enumerate(batches):
+            epoch_loss = 0
+            num_batches = 0
+            
+            # 训练每个batch
+            for X_batch, y_batch in batches:
+                # Reshape为图像格式
+                X_batch_img = X_batch.reshape(-1, 1, 28, 28).astype(np.float32)
+                X_batch_tensor = torch.FloatTensor(X_batch_img).to(self.device)
+                y_batch_tensor = torch.LongTensor(y_batch).to(self.device)
+                
+                # 清零梯度
+                optimizer.zero_grad()
+                
                 # 前向传播
-                self.forward(X_batch)
+                outputs = self.forward(X_batch_tensor)
+                loss = criterion(outputs, y_batch_tensor)
                 
                 # 反向传播
-                self.backward(y_batch)
+                loss.backward()
+                optimizer.step()
                 
-                if (i + 1) % 50 == 0:
-                    print(f'  Batch {i + 1}/{len(batches)} 完成', end='\r')
+                epoch_loss += loss.item()
+                num_batches += 1
             
-            # 评估
-            train_acc = self.evaluate(X_train[:1000], y_train[:1000])
-            test_acc = self.evaluate(X_test, y_test)
+            avg_loss = epoch_loss / num_batches if num_batches > 0 else 0
+            
+            # 计算训练和测试准确率
+            train_acc = self.evaluate(X_train_tensor, y_train_tensor)
+            test_acc = self.evaluate(X_test_tensor, y_test_tensor)
             
             history['train_acc'].append(train_acc)
             history['test_acc'].append(test_acc)
             
-            print(f'Epoch {epoch + 1}/{epochs} - '
+            # 更新学习率调度器
+            scheduler.step(test_acc)
+            
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f'Epoch {epoch + 1}/{epochs} - Loss: {avg_loss:.4f} - '
                   f'Train Accuracy: {train_acc:.4f}, '
-                  f'Test Accuracy: {test_acc:.4f}')
+                  f'Test Accuracy: {test_acc:.4f} - '
+                  f'LR: {current_lr:.6f}')
+            
+            # 定期清理GPU内存
+            if (epoch + 1) % 5 == 0:
+                clear_gpu_memory()
         
         return history
     
     def predict(self, X):
-        """预测"""
-        # 确保输入在 GPU 上（如果使用 GPU）
-        if not is_gpu_available():
-            X = xp.asarray(X)
-        else:
-            X = to_gpu(X) if not hasattr(X, 'get') else X
+        """
+        预测
         
-        output = self.forward(X)
-        probs = self.softmax(output)
-        predictions = xp.argmax(probs, axis=1)
-        return to_cpu(predictions)
+        参数:
+            X: 输入数据 (numpy数组, shape: [N, 784] 或 [N, 1, 28, 28])
+        
+        返回:
+            predictions: 预测的类别（numpy 数组）
+        """
+        self.eval()  # 设置为评估模式
+        
+        with torch.no_grad():
+            # 转换为PyTorch张量并reshape
+            if isinstance(X, torch.Tensor):
+                X = X.cpu().numpy()
+            
+            if X.ndim == 2:  # shape: [N, 784]
+                X_img = X.reshape(-1, 1, 28, 28).astype(np.float32)
+            else:  # shape: [N, 1, 28, 28]
+                X_img = X.astype(np.float32)
+            
+            X_tensor = torch.FloatTensor(X_img).to(self.device)
+            
+            # 前向传播
+            outputs = self.forward(X_tensor)
+            
+            # 获取预测类别
+            _, predictions = torch.max(outputs, 1)
+            
+            # 返回numpy数组
+            return predictions.cpu().numpy()
     
     def evaluate(self, X, y):
-        """评估"""
-        predictions = self.predict(X)
-        y = np.asarray(y)
-        return float(np.mean(predictions == y))
+        """
+        评估模型
+        
+        参数:
+            X: 输入数据 (PyTorch张量, shape: [N, 1, 28, 28])
+            y: 真实标签 (PyTorch张量)
+        
+        返回:
+            accuracy: 准确率
+        """
+        self.eval()
+        
+        with torch.no_grad():
+            outputs = self.forward(X)
+            _, predictions = torch.max(outputs, 1)
+            accuracy = (predictions == y).float().mean().item()
+        
+        return accuracy
 
 
 def main():
@@ -369,9 +247,9 @@ def main():
     import time
     start_time = time.time()
     
-    print("=" * 60)
-    print("LeNet-5 神经网络 - Fashion-MNIST分类")
-    print("=" * 60)
+    print("=" * 70)
+    print("LeNet-5 卷积神经网络 - Fashion-MNIST分类 (PyTorch版本)")
+    print("=" * 70)
     
     # 设置随机种子
     set_random_seed(42)
@@ -382,26 +260,56 @@ def main():
     print(f"训练集: {X_train.shape[0]} 样本")
     print(f"测试集: {X_test.shape[0]} 样本")
     
-    # 创建LeNet-5模型
+    # 创建LeNet-5模型（优化版）
     print("\n创建LeNet-5模型...")
-    print("网络结构: Conv(6) -> Sigmoid -> AvgPool -> Conv(16) -> Sigmoid -> AvgPool")
-    print("          -> FC(120) -> Sigmoid -> FC(84) -> Sigmoid -> FC(10)")
-    model = LeNet5(learning_rate=0.05)
+    print("网络结构: Conv1(6) -> ReLU -> AvgPool -> Conv2(16) -> ReLU -> AvgPool -> FC1(120) -> ReLU -> FC2(84) -> ReLU -> FC3(10)")
+    model = LeNet5(learning_rate=0.0005)
+    
+    # 显示GPU信息
+    if is_gpu_available():
+        mem_info = get_gpu_memory_usage()
+        if mem_info:
+            print(f"\nGPU内存: {mem_info['used']:.1f}MB / {mem_info['total']:.1f}MB (可用: {mem_info['free']:.1f}MB)")
     
     # 训练模型
     print("\n开始训练...")
-    print("注意: LeNet-5训练需要一定时间...")
-    history = model.train(
+    
+    # 根据GPU内存动态调整batch_size
+    if is_gpu_available():
+        mem_info = get_gpu_memory_usage()
+        if mem_info and mem_info['free'] > 80000:
+            batch_size = 512
+        elif mem_info and mem_info['free'] > 50000:
+            batch_size = 256
+        elif mem_info and mem_info['free'] > 20000:
+            batch_size = 128
+        elif mem_info and mem_info['free'] > 10000:
+            batch_size = 64
+        else:
+            batch_size = 32
+    else:
+        batch_size = 64  # CPU模式
+    
+    print(f"使用batch_size={batch_size}进行训练")
+    # 增加训练轮数以达到95%准确率
+    history = model.train_model(
         X_train, y_train,
         X_test, y_test,
-        epochs=10,
-        batch_size=128
+        epochs=80,
+        batch_size=batch_size
     )
     
     # 最终评估
     print("\n训练完成！正在生成报告...")
-    train_acc = model.evaluate(X_train[:1000], y_train[:1000])  # 采样评估训练集
-    test_acc = model.evaluate(X_test, y_test)
+    X_train_img = X_train.reshape(-1, 1, 28, 28).astype(np.float32)
+    X_test_img = X_test.reshape(-1, 1, 28, 28).astype(np.float32)
+    X_train_tensor = torch.FloatTensor(X_train_img).to(model.device)
+    y_train_tensor = torch.LongTensor(y_train).to(model.device)
+    X_test_tensor = torch.FloatTensor(X_test_img).to(model.device)
+    y_test_tensor = torch.LongTensor(y_test).to(model.device)
+    
+    train_acc = model.evaluate(X_train_tensor, y_train_tensor)
+    test_acc = model.evaluate(X_test_tensor, y_test_tensor)
     
     training_time = time.time() - start_time
     
@@ -416,7 +324,7 @@ def main():
         X_test=X_test,
         y_test=y_test,
         model=model,
-        layer_info="Conv(6) -> Sigmoid -> AvgPool -> Conv(16) -> Sigmoid -> AvgPool -> FC(120) -> FC(84) -> FC(10)",
+        layer_info="Conv1(6) -> ReLU -> AvgPool -> Conv2(16) -> ReLU -> AvgPool -> FC1(120) -> ReLU -> FC2(84) -> ReLU -> FC3(10)",
         learning_rate=model.learning_rate,
         training_time=training_time
     )
@@ -424,4 +332,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

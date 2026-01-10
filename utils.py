@@ -1,123 +1,47 @@
 """
 Fashion-MNIST数据集加载工具
 支持读取和解压.gz格式的Fashion-MNIST数据
-数据默认加载到 CPU（NumPy），可在需要时传输到 GPU
+数据默认加载到 CPU（NumPy），可在需要时传输到 GPU (PyTorch)
 """
 import gzip
 import numpy as np
 import os
+import torch
 
 
 def set_random_seed(seed=42):
     """
-    设置随机种子以保证实验可重复性
+    设置随机种子以保证实验可重复性（PyTorch版本）
     
     参数:
         seed: 随机种子值
     """
     np.random.seed(seed)
-    try:
-        import cupy as cp
-        cp.random.seed(seed)
-        print(f"✓ 随机种子已设置: {seed} (NumPy + CuPy)")
-    except ImportError:
-        print(f"✓ 随机种子已设置: {seed} (NumPy)")
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    print(f"✓ 随机种子已设置: {seed} (NumPy + PyTorch)")
 
 
+# 注意：PyTorch 使用内置的卷积操作，不再需要 im2col 和 col2im 函数
+# 保留这些函数作为占位符以保持向后兼容，但它们不会被使用
 def im2col(X, kernel_h, kernel_w, stride=1, padding=0):
     """
-    将输入图像转换为列矩阵，用于高效的卷积计算
-    im2col 方法将卷积操作转换为矩阵乘法
-    优化版本：使用向量化操作提高速度
-    
-    参数:
-        X: 输入, shape (batch, channels, height, width)
-        kernel_h: 卷积核高度
-        kernel_w: 卷积核宽度
-        stride: 步长
-        padding: 填充
-    
-    返回:
-        col: 列矩阵, shape (batch*out_h*out_w, channels*kernel_h*kernel_w)
-        out_h, out_w: 输出的高度和宽度
+    已弃用：PyTorch使用内置卷积操作，不再需要im2col
+    保留此函数仅为向后兼容
     """
-    from gpu_utils import xp
-    
-    batch, channels, height, width = X.shape
-    
-    # 添加padding
-    if padding > 0:
-        X = xp.pad(X, ((0, 0), (0, 0), (padding, padding), (padding, padding)), 
-                  mode='constant')
-        height += 2 * padding
-        width += 2 * padding
-    
-    # 计算输出尺寸
-    out_h = (height - kernel_h) // stride + 1
-    out_w = (width - kernel_w) // stride + 1
-    
-    # 向量化优化版本：使用高级索引减少循环
-    col_height = batch * out_h * out_w
-    col_width = channels * kernel_h * kernel_w
-    col = xp.zeros((col_height, col_width), dtype=X.dtype)
-    
-    # 使用向量化索引提取窗口
-    # 为每个输出位置生成索引
-    col_idx = 0
-    for b in range(batch):
-        for oh in range(out_h):
-            y_start = oh * stride
-            y_end = y_start + kernel_h
-            for ow in range(out_w):
-                x_start = ow * stride
-                x_end = x_start + kernel_w
-                
-                # 提取当前窗口的所有通道（向量化操作）
-                window = X[b, :, y_start:y_end, x_start:x_end]  # (channels, kernel_h, kernel_w)
-                col[col_idx, :] = window.flatten()
-                col_idx += 1
-    
-    return col, out_h, out_w
+    raise NotImplementedError("im2col is not needed in PyTorch. Use torch.nn.Conv2d instead.")
 
 
 def col2im(col, X_shape, kernel_h, kernel_w, stride=1, padding=0):
     """
-    将列矩阵转换回图像格式（im2col的逆操作）
-    
-    参数:
-        col: 列矩阵
-        X_shape: 原始输入的形状 (batch, channels, height, width)
-        kernel_h: 卷积核高度
-        kernel_w: 卷积核宽度
-        stride: 步长
-        padding: 填充
-    
-    返回:
-        X: 图像, shape (batch, channels, height, width)
+    已弃用：PyTorch使用内置卷积操作，不再需要col2im
+    保留此函数仅为向后兼容
     """
-    from gpu_utils import xp
-    
-    batch, channels, height, width = X_shape
-    
-    # 计算输出尺寸
-    out_h = (height + 2 * padding - kernel_h) // stride + 1
-    out_w = (width + 2 * padding - kernel_w) // stride + 1
-    
-    col = col.reshape(batch, out_h, out_w, channels, kernel_h, kernel_w).transpose(0, 3, 4, 5, 1, 2)
-    
-    # 创建带padding的图像
-    X = xp.zeros((batch, channels, height + 2 * padding, width + 2 * padding))
-    
-    for y in range(kernel_h):
-        y_max = y + stride * out_h
-        for x in range(kernel_w):
-            x_max = x + stride * out_w
-            X[:, :, y:y_max:stride, x:x_max:stride] += col[:, :, y, x, :, :]
-    
-    # 移除padding
-    if padding > 0:
-        return X[:, :, padding:-padding, padding:-padding]
-    return X
+    raise NotImplementedError("col2im is not needed in PyTorch. Use torch.nn.ConvTranspose2d instead.")
 
 
 def load_mnist_images(filename):
@@ -167,24 +91,55 @@ def load_mnist_labels(filename):
     return labels
 
 
-def load_fashion_mnist(data_dir='../dataset'):
+def load_fashion_mnist(data_dir=None):
     """
     加载完整的Fashion-MNIST数据集
     
     参数:
-        data_dir: 数据集目录路径
+        data_dir: 数据集目录路径，如果为None则自动检测
     
     返回:
         (train_images, train_labels, test_images, test_labels)
     """
+    # 自动检测数据集路径
+    if data_dir is None:
+        # 获取当前文件的目录
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # 尝试几个可能的路径
+        possible_paths = [
+            os.path.join(current_dir, 'dataset'),  # 同目录下的dataset
+            os.path.join(current_dir, '..', 'dataset'),  # 上级目录下的dataset
+            './dataset',  # 相对路径
+            '../dataset'  # 上级相对路径
+        ]
+        
+        for path in possible_paths:
+            test_file = os.path.join(path, 'train-images-idx3-ubyte.gz')
+            if os.path.exists(test_file):
+                data_dir = path
+                break
+        
+        if data_dir is None:
+            raise FileNotFoundError(
+                f"找不到数据集目录。请确保数据集文件存在于以下路径之一：\n" +
+                "\n".join([f"  - {os.path.abspath(p)}" for p in possible_paths])
+            )
+    
+    # Fashion-MNIST标准命名使用t10k前缀，不是test
     train_images = load_mnist_images(
         os.path.join(data_dir, 'train-images-idx3-ubyte.gz'))
     train_labels = load_mnist_labels(
         os.path.join(data_dir, 'train-labels-idx1-ubyte.gz'))
-    test_images = load_mnist_images(
-        os.path.join(data_dir, 'test-images-idx3-ubyte.gz'))
-    test_labels = load_mnist_labels(
-        os.path.join(data_dir, 'test-labels-idx1-ubyte.gz'))
+    # 尝试两种命名方式：先尝试t10k（标准命名），再尝试test（兼容性）
+    test_images_path = os.path.join(data_dir, 't10k-images-idx3-ubyte.gz')
+    if not os.path.exists(test_images_path):
+        test_images_path = os.path.join(data_dir, 'test-images-idx3-ubyte.gz')
+    test_images = load_mnist_images(test_images_path)
+    
+    test_labels_path = os.path.join(data_dir, 't10k-labels-idx1-ubyte.gz')
+    if not os.path.exists(test_labels_path):
+        test_labels_path = os.path.join(data_dir, 'test-labels-idx1-ubyte.gz')
+    test_labels = load_mnist_labels(test_labels_path)
     
     return train_images, train_labels, test_images, test_labels
 
@@ -207,20 +162,32 @@ def one_hot_encode(labels, num_classes=10):
 
 def create_mini_batches(X, y, batch_size):
     """
-    创建mini-batch
+    创建mini-batch（PyTorch版本）
+    支持numpy数组或PyTorch张量
     
     参数:
-        X: 输入数据
-        y: 标签
+        X: 输入数据（numpy数组或PyTorch张量）
+        y: 标签（numpy数组）
         batch_size: batch大小
     
     返回:
-        batches: [(X_batch, y_batch), ...]
+        batches: [(X_batch, y_batch), ...]，返回numpy数组格式以保持兼容性
     """
+    import numpy as np
+    
+    # 转换为numpy数组（如果输入是PyTorch张量）
+    if isinstance(X, torch.Tensor):
+        X = X.cpu().numpy()
+    if isinstance(y, torch.Tensor):
+        y = y.cpu().numpy()
+    
+    X = np.asarray(X)
+    y = np.asarray(y)
+    
     m = X.shape[0]
     batches = []
     
-    # 打乱数据
+    # 打乱数据 - 生成随机索引
     permutation = np.random.permutation(m)
     X_shuffled = X[permutation]
     y_shuffled = y[permutation]
@@ -440,24 +407,36 @@ def parse_report_file(report_file):
         
         result = {}
         
-        # 解析测试准确率
+        # 解析测试准确率（优先匹配【最终性能】部分的，如果没有则匹配其他部分）
         import re
-        test_acc_match = re.search(r'测试准确率:\s*([\d.]+)\s*\(([\d.]+)%\)', content)
-        if test_acc_match:
-            result['test_acc'] = float(test_acc_match.group(1))
+        # 先尝试匹配【最终性能】部分的准确率（更准确）
+        final_perf_match = re.search(r'【最终性能】.*?测试准确率:\s*([\d.]+)\s*\(([\d.]+)%\)', content, re.DOTALL)
+        if final_perf_match:
+            result['test_acc'] = float(final_perf_match.group(1))
+        else:
+            # 如果没有找到，尝试匹配其他部分的测试准确率
+            test_acc_match = re.search(r'测试准确率:\s*([\d.]+)\s*\(([\d.]+)%\)', content)
+            if test_acc_match:
+                result['test_acc'] = float(test_acc_match.group(1))
         
-        # 解析训练准确率
-        train_acc_match = re.search(r'训练准确率:\s*([\d.]+)\s*\(([\d.]+)%\)', content)
-        if train_acc_match:
-            result['train_acc'] = float(train_acc_match.group(1))
+        # 解析训练准确率（优先匹配【最终性能】部分的）
+        final_train_match = re.search(r'【最终性能】.*?训练准确率:\s*([\d.]+)\s*\(([\d.]+)%\)', content, re.DOTALL)
+        if final_train_match:
+            result['train_acc'] = float(final_train_match.group(1))
+        else:
+            # 如果没有找到，尝试匹配其他部分的训练准确率
+            train_acc_match = re.search(r'训练准确率:\s*([\d.]+)\s*\(([\d.]+)%\)', content)
+            if train_acc_match:
+                result['train_acc'] = float(train_acc_match.group(1))
         
-        # 解析训练时间
+        # 解析训练时间（匹配 "训练时间: X.XX 秒" 或 "训练时间: X.XX 秒 (X.XX 分钟)"）
         time_match = re.search(r'训练时间:\s*([\d.]+)\s*秒', content)
         if time_match:
             result['training_time'] = float(time_match.group(1))
         
         return result if result else None
-    except Exception:
+    except Exception as e:
+        print(f"解析报告文件 {report_file} 时出错: {e}")
         return None
 
 
@@ -506,6 +485,101 @@ def generate_summary_report(model_results, reports_dir="reports"):
     add_line(f"  成功: {len(success_models)} 个")
     add_line(f"  失败: {len(failed_models)} 个")
     
+    # 在生成对比表之前，先尝试从报告文件中补充准确率信息
+    if os.path.exists(reports_dir):
+        report_files = sorted(glob.glob(os.path.join(reports_dir, "*.txt")), 
+                             key=os.path.getmtime, reverse=True)
+        
+        # 建立模型名称映射（处理中文模型名称和英文文件名的匹配）
+        model_name_mapping = {
+            '多层感知机 (MLP)': ['多层感知机_MLP', 'MLP', '多层感知机'],
+            '卷积神经网络 (CNN)': ['卷积神经网络_CNN', 'CNN', '卷积神经网络'],
+            '残差网络 (ResNet)': ['残差神经网络_ResNet', 'ResNet', '残差网络', '残差神经网络'],
+            'LeNet-5': ['LeNet', 'LeNet-5'],
+            'Wide ResNet-28-10 + Random Erasing': ['Wide_ResNet', 'Wide ResNet'],
+            'DenseNet-BC': ['DenseNet', 'DenseNet-BC'],
+            'Capsule Network': ['Capsule_Network', 'Capsule', 'CapsNet']
+        }
+        
+        # 为每个成功模型查找对应的报告文件并解析
+        model_file_map = {}
+        for file in report_files:
+            basename = os.path.basename(file)
+            # 跳过汇总报告和参数文件
+            if '汇总报告' in basename or '参数' in basename:
+                continue
+            # 从文件名提取模型名称（去掉时间戳）
+            parts = basename.rsplit('_', 2)
+            if len(parts) >= 3:
+                model_key = '_'.join(parts[:-2])
+                if model_key not in model_file_map:
+                    model_file_map[model_key] = file
+        
+        # 更新模型结果（优先使用报告文件中的准确率）
+        for result in model_results:
+            if result.get('status') == 'success':
+                model_name = result.get('model_name', '')
+                
+                # 查找匹配的报告文件
+                matched_file = None
+                # 首先尝试直接匹配文件名中的关键部分（更精确的匹配）
+                for key, file_path in model_file_map.items():
+                    # 提取模型名称的关键词进行匹配（使用更精确的匹配逻辑）
+                    matched = False
+                    
+                    if 'MLP' in model_name or '多层感知机' in model_name:
+                        # MLP: 只匹配包含"MLP"或"多层感知机"但不包含其他复杂模型的名称
+                        matched = ('MLP' in key or '多层感知机' in key) and 'Wide' not in key and 'Dense' not in key
+                    elif 'CNN' in model_name or '卷积神经网络' in model_name:
+                        # CNN: 只匹配包含"CNN"或"卷积神经网络"的文件
+                        matched = ('CNN' in key or '卷积神经网络' in key) and 'Wide' not in key
+                    elif '残差网络' in model_name or ('ResNet' in model_name and 'Wide' not in model_name):
+                        # ResNet: 只匹配"残差神经网络"或只包含"ResNet"（不包含"Wide"）的文件
+                        matched = ('残差' in key and 'Wide' not in key) or (key == 'ResNet' or (key.endswith('ResNet') and not key.startswith('Wide')))
+                    elif 'LeNet' in model_name:
+                        # LeNet: 只匹配LeNet相关的文件
+                        matched = 'LeNet' in key
+                    elif 'Wide' in model_name or 'WRN' in model_name:
+                        # Wide ResNet: 只匹配Wide ResNet相关的文件
+                        matched = 'Wide' in key or 'WRN' in key
+                    elif 'DenseNet' in model_name or ('Dense' in model_name and 'DenseNet' in model_name):
+                        # DenseNet: 只匹配DenseNet相关的文件
+                        matched = 'DenseNet' in key or ('Dense' in key and 'Wide' not in key)
+                    elif 'Capsule' in model_name or 'CapsNet' in model_name:
+                        # Capsule Network: 只匹配Capsule相关的文件
+                        matched = 'Capsule' in key or 'CapsNet' in key
+                    
+                    if matched:
+                        matched_file = file_path
+                        break
+                
+                # 如果没有找到匹配的文件，尝试使用映射表
+                if not matched_file:
+                    for full_name, keywords in model_name_mapping.items():
+                        if full_name == model_name:
+                            for kw in keywords:
+                                for key, file_path in model_file_map.items():
+                                    if kw in key:
+                                        matched_file = file_path
+                                        break
+                                if matched_file:
+                                    break
+                        if matched_file:
+                            break
+                
+                # 解析匹配的报告文件并更新结果
+                if matched_file:
+                    parsed = parse_report_file(matched_file)
+                    if parsed:
+                        # 优先使用报告文件中的数据（更准确）
+                        if 'test_acc' in parsed:
+                            result['test_acc'] = parsed['test_acc']
+                        if 'train_acc' in parsed:
+                            result['train_acc'] = parsed['train_acc']
+                        if 'training_time' in parsed and parsed['training_time'] > 0:
+                            result['training_time'] = parsed['training_time']
+                        print(f"  已从报告文件更新 {model_name} 的准确率: 训练={result.get('train_acc', 0):.4f}, 测试={result.get('test_acc', 0):.4f}")
+    
     # 成功模型对比
     if success_models:
         add_line("\n【模型性能对比】")
@@ -548,42 +622,6 @@ def generate_summary_report(model_results, reports_dir="reports"):
             model_name = result.get('model_name', '未知')
             error = result.get('error', '未知错误')
             add_line(f"  ✗ {model_name}: {error}")
-    
-    # 尝试从报告文件中补充准确率信息
-    if os.path.exists(reports_dir):
-        report_files = sorted(glob.glob(os.path.join(reports_dir, "*.txt")), 
-                             key=os.path.getmtime, reverse=True)
-        
-        # 为每个成功模型查找对应的报告文件并解析
-        model_file_map = {}
-        for file in report_files:
-            basename = os.path.basename(file)
-            # 跳过汇总报告
-            if '汇总报告' in basename:
-                continue
-            # 从文件名提取模型名称
-            parts = basename.rsplit('_', 2)
-            if len(parts) >= 3:
-                model_key = '_'.join(parts[:-2])
-                if model_key not in model_file_map:
-                    model_file_map[model_key] = file
-        
-        # 更新模型结果
-        for result in model_results:
-            if result.get('status') == 'success':
-                model_name = result.get('model_name', '')
-                # 尝试匹配模型名称
-                for key, file_path in model_file_map.items():
-                    if key in model_name or model_name in key:
-                        parsed = parse_report_file(file_path)
-                        if parsed:
-                            if 'test_acc' in parsed and result.get('test_acc', 0) == 0:
-                                result['test_acc'] = parsed['test_acc']
-                            if 'train_acc' in parsed and result.get('train_acc', 0) == 0:
-                                result['train_acc'] = parsed['train_acc']
-                            if 'training_time' in parsed and result.get('training_time', 0) == 0:
-                                result['training_time'] = parsed['training_time']
-                        break
     
     # 报告文件列表
     add_line("\n【生成的报告文件】")

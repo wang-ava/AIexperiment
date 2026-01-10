@@ -23,6 +23,7 @@ def print_menu():
     print("  7. Capsule Network - 胶囊网络 (93.6% benchmark, 很慢)")
     print("  8. 测试数据加载")
     print("  9. 运行所有新模型 (5-7)")
+    print(" 10. 运行所有模型 (1-7)")
     print("  0. 退出")
     print("\n" + "=" * 60)
 
@@ -82,7 +83,10 @@ def run_model(choice):
 
 def run_all_models(include_test=False):
     """自动运行所有模型"""
-    from utils import generate_summary_report
+    from utils import generate_summary_report, parse_report_file
+    import os
+    import glob
+    import time
     
     print("\n" + "=" * 60)
     print(" " * 15 + "自动运行所有模型")
@@ -104,10 +108,22 @@ def run_all_models(include_test=False):
         '8': '数据加载测试'
     }
     
+    # 模型名称到报告文件名的映射
+    model_file_keys = {
+        '1': 'MLP',
+        '2': 'CNN',
+        '3': 'LeNet',
+        '4': 'ResNet',
+        '5': 'Wide_ResNet',
+        '6': 'DenseNet',
+        '7': 'Capsule'
+    }
+    
     total = len(models_to_run)
     success_count = 0
     failed_models = []
     model_results = []  # 用于存储所有模型的结果
+    reports_dir = "reports"
     
     for idx, choice in enumerate(models_to_run, 1):
         model_name = model_names[choice]
@@ -125,17 +141,42 @@ def run_all_models(include_test=False):
         
         try:
             # 记录开始时间
-            import time
             start_time = time.time()
+            
+            # 记录训练前的报告文件时间戳（如果有）
+            if os.path.exists(reports_dir) and choice in model_file_keys:
+                existing_reports = glob.glob(os.path.join(reports_dir, f"{model_file_keys[choice]}*.txt"))
+                before_time = max([os.path.getmtime(f) for f in existing_reports]) if existing_reports else 0
+            else:
+                before_time = 0
             
             if run_model(choice):
                 success_count += 1
                 result['status'] = 'success'
                 result['training_time'] = time.time() - start_time
                 
-                # 尝试从报告中提取准确率（如果模型训练成功）
-                # 注意：这里我们无法直接获取准确率，因为run_model不返回这些信息
-                # 但我们可以标记为成功，汇总报告会显示成功状态
+                # 从最新的报告文件中提取准确率
+                if os.path.exists(reports_dir) and choice in model_file_keys:
+                    # 查找匹配的报告文件
+                    pattern = os.path.join(reports_dir, f"{model_file_keys[choice]}*.txt")
+                    report_files = glob.glob(pattern)
+                    
+                    # 过滤出训练后新创建或更新的文件
+                    new_reports = [f for f in report_files if os.path.getmtime(f) > before_time]
+                    
+                    if new_reports:
+                        # 取最新的报告文件
+                        latest_report = max(new_reports, key=os.path.getmtime)
+                        parsed = parse_report_file(latest_report)
+                        if parsed:
+                            if 'test_acc' in parsed:
+                                result['test_acc'] = parsed['test_acc']
+                            if 'train_acc' in parsed:
+                                result['train_acc'] = parsed['train_acc']
+                            if 'training_time' in parsed and parsed['training_time'] > 0:
+                                result['training_time'] = parsed['training_time']
+                            print(f"  从报告提取: 训练准确率={result['train_acc']:.4f}, 测试准确率={result['test_acc']:.4f}")
+                
                 print(f"\n✓ {model_name} 运行成功")
             else:
                 failed_models.append(model_name)
@@ -247,11 +288,24 @@ def main():
         print_menu()
         
         try:
-            choice = input("\n请输入选项 (0-9): ").strip()
+            choice = input("\n请输入选项 (0-10): ").strip()
             
             if choice == '0':
                 print("\n再见！")
                 break
+            elif choice == '10':
+                # 运行所有模型
+                print("\n将依次运行所有模型: MLP, CNN, LeNet-5, ResNet, Wide ResNet, DenseNet, Capsule Network")
+                confirm = input(f"\n确认运行？这将需要很长时间 (y/n): ").strip().lower()
+                if confirm == 'y':
+                    run_all_models(include_test=False)
+                    
+                    cont = input("\n是否继续训练其他模型？(y/n): ").strip().lower()
+                    if cont != 'y':
+                        print("\n再见！")
+                        break
+                else:
+                    print("已取消。")
             elif choice == '9':
                 # 运行所有新模型
                 print("\n将依次运行: Wide ResNet, DenseNet, Capsule Network")
@@ -285,7 +339,7 @@ def main():
                 else:
                     print("已取消。")
             else:
-                print("\n无效的选项，请输入 0-9 之间的数字。")
+                print("\n无效的选项，请输入 0-10 之间的数字。")
         
         except KeyboardInterrupt:
             print("\n\n用户中断，退出程序。")

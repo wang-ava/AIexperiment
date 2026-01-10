@@ -1,105 +1,90 @@
 """
-GPU 支持工具模块
-自动检测 GPU 并选择使用 NumPy 或 CuPy
-如果检测到 CUDA 和 CuPy，则使用 GPU 加速
-否则回退到 CPU 上的 NumPy
+PyTorch GPU 支持工具模块
+自动检测 GPU 并使用 PyTorch 的设备管理
 """
-import os
+import torch
+import torch.backends.cudnn as cudnn
 
-# 尝试导入 CuPy
-try:
-    import cupy as cp
-    import cupy.cuda.runtime as cuda_runtime
-    
-    # 检查是否有可用的 GPU
-    try:
-        device_count = cuda_runtime.getDeviceCount()
-        if device_count > 0:
-            # 设置默认设备
-            cp.cuda.Device(0).use()
-            USE_GPU = True
-            print(f"✓ 检测到 {device_count} 个 GPU，使用 CuPy 进行 GPU 加速")
-            print(f"  当前 GPU: {cp.cuda.Device().id}")
-            print(f"  GPU 名称: {cp.cuda.runtime.getDeviceProperties(0)['name'].decode('utf-8')}")
-        else:
-            USE_GPU = False
-            print("⚠ 未检测到可用的 GPU，使用 CPU (NumPy)")
-    except Exception as e:
-        USE_GPU = False
-        print(f"⚠ GPU 检测失败: {e}，使用 CPU (NumPy)")
-    
-except ImportError:
-    USE_GPU = False
-    print("⚠ CuPy 未安装，使用 CPU (NumPy)")
-    print("  提示: 要启用 GPU 加速，请安装 CuPy: pip install cupy-cuda11x (根据你的 CUDA 版本)")
 
-# 导入 NumPy 作为备用
-import numpy as np
+# 检查GPU是否可用
+USE_GPU = torch.cuda.is_available()
+DEVICE = torch.device('cuda' if USE_GPU else 'cpu')
 
-# 根据 GPU 可用性选择数组库
 if USE_GPU:
-    xp = cp  # 使用 CuPy
-    ARRAY_MODULE = 'cupy'
+    print(f"✓ 检测到 {torch.cuda.device_count()} 个 GPU，使用 PyTorch 进行 GPU 加速")
+    print(f"  当前 GPU: {torch.cuda.get_device_name(0)}")
+    print(f"  CUDA 版本: {torch.version.cuda}")
+    # 设置cudnn基准测试以提高性能（如果输入大小固定）
+    cudnn.benchmark = True
 else:
-    xp = np  # 使用 NumPy
-    ARRAY_MODULE = 'numpy'
+    print("⚠ 未检测到可用的 GPU，使用 CPU (PyTorch)")
 
 
-def get_array_module():
+def get_device():
     """
-    获取当前使用的数组模块（NumPy 或 CuPy）
+    获取当前设备
     
     返回:
-        xp: numpy 或 cupy 模块
+        torch.device: 当前使用的设备 (cuda 或 cpu)
     """
-    return xp
+    return DEVICE
 
 
-def to_cpu(array):
+def to_cpu(tensor):
     """
-    将数组从 GPU 传输到 CPU（如果是 CuPy 数组）
-    如果是 NumPy 数组，直接返回
+    将张量从 GPU 传输到 CPU
     
     参数:
-        array: numpy 或 cupy 数组
+        tensor: PyTorch 张量
+    
+    返回:
+        numpy 数组 (在CPU上)
+    """
+    if isinstance(tensor, torch.Tensor):
+        return tensor.cpu().detach().numpy()
+    return tensor
+
+
+def to_gpu(array, device=None):
+    """
+    将数组或张量传输到指定设备（默认GPU）
+    
+    参数:
+        array: numpy 数组或 PyTorch 张量
+        device: 目标设备，默认使用全局DEVICE
+    
+    返回:
+        PyTorch 张量 (在指定设备上)
+    """
+    if device is None:
+        device = DEVICE
+    
+    if isinstance(array, torch.Tensor):
+        return array.to(device)
+    elif isinstance(array, (list, tuple)):
+        return [to_gpu(x, device) for x in array]
+    else:
+        # 假设是numpy数组
+        import numpy as np
+        if isinstance(array, np.ndarray):
+            return torch.from_numpy(array).to(device)
+        return torch.tensor(array).to(device)
+
+
+def asnumpy(tensor):
+    """
+    将张量转换为 NumPy 数组
+    
+    参数:
+        tensor: PyTorch 张量
     
     返回:
         numpy 数组
     """
-    if USE_GPU and hasattr(array, 'get'):  # CuPy 数组有 get() 方法
-        return array.get()
-    return array
-
-
-def to_gpu(array):
-    """
-    将数组从 CPU 传输到 GPU（如果使用 GPU）
-    如果使用 CPU，直接返回
-    
-    参数:
-        array: numpy 数组
-    
-    返回:
-        numpy 或 cupy 数组
-    """
-    if USE_GPU:
-        return cp.asarray(array)
-    return array
-
-
-def asnumpy(array):
-    """
-    将数组转换为 NumPy 数组（兼容 CuPy 的 asnumpy）
-    
-    参数:
-        array: numpy 或 cupy 数组
-    
-    返回:
-        numpy 数组
-    """
-    if USE_GPU and hasattr(array, 'get'):
-        return array.get()
-    return np.asarray(array)
+    if isinstance(tensor, torch.Tensor):
+        return tensor.cpu().detach().numpy()
+    import numpy as np
+    return np.asarray(tensor)
 
 
 def is_gpu_available():
@@ -121,16 +106,16 @@ def get_device_info():
     """
     info = {
         'using_gpu': USE_GPU,
-        'array_module': ARRAY_MODULE
+        'device': str(DEVICE),
+        'device_count': torch.cuda.device_count() if USE_GPU else 0
     }
     
     if USE_GPU:
         try:
-            props = cp.cuda.runtime.getDeviceProperties(0)
-            info['gpu_name'] = props['name'].decode('utf-8')
-            info['gpu_memory'] = cp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / (1024**3)  # GB
-            info['device_count'] = cp.cuda.runtime.getDeviceCount()
-        except:
+            info['gpu_name'] = torch.cuda.get_device_name(0)
+            info['cuda_version'] = torch.version.cuda
+            info['gpu_memory'] = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+        except Exception:
             pass
     
     return info
@@ -142,18 +127,9 @@ def clear_gpu_memory():
     建议在训练循环中的关键位置调用，特别是在处理大batch之后
     """
     if USE_GPU:
-        try:
-            import gc
-            # 清理Python的垃圾收集器
-            gc.collect()
-            # 清理CuPy的内存池
-            mempool = cp.get_default_memory_pool()
-            mempool.free_all_blocks()
-            pinned_mempool = cp.get_default_pinned_memory_pool()
-            pinned_mempool.free_all_blocks()
-        except Exception as e:
-            # 如果清理失败，不影响程序运行
-            pass
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def get_gpu_memory_usage():
@@ -167,25 +143,39 @@ def get_gpu_memory_usage():
         return None
     
     try:
-        mempool = cp.get_default_memory_pool()
-        used_bytes = mempool.used_bytes()
-        total_bytes = cp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem']
-        free_bytes = total_bytes - used_bytes
+        used_bytes = torch.cuda.memory_allocated(0)
+        reserved_bytes = torch.cuda.memory_reserved(0)
+        total_bytes = torch.cuda.get_device_properties(0).total_memory
         
         return {
             'used': used_bytes / (1024**2),  # MB
+            'reserved': reserved_bytes / (1024**2),  # MB
             'total': total_bytes / (1024**2),  # MB
-            'free': free_bytes / (1024**2)  # MB
+            'free': (total_bytes - reserved_bytes) / (1024**2)  # MB
         }
-    except:
+    except Exception:
         return None
 
 
-# 导出常用的数组操作，使其可以直接使用
-# 这样代码中可以使用 xp.array(), xp.zeros() 等，自动适配 NumPy 或 CuPy
-__all__ = [
-    'xp', 'USE_GPU', 'ARRAY_MODULE',
-    'get_array_module', 'to_cpu', 'to_gpu', 'asnumpy',
-    'is_gpu_available', 'get_device_info', 'clear_gpu_memory', 'get_gpu_memory_usage'
-]
+# 兼容旧代码：提供xp变量（指向torch，但不推荐直接使用）
+# 新代码应该直接使用torch
+xp = torch
+ARRAY_MODULE = 'pytorch'
 
+
+def get_array_module():
+    """
+    获取当前使用的数组模块（PyTorch）
+    
+    返回:
+        torch: PyTorch 模块
+    """
+    return torch
+
+
+__all__ = [
+    'DEVICE', 'USE_GPU', 'ARRAY_MODULE',
+    'get_device', 'to_cpu', 'to_gpu', 'asnumpy',
+    'is_gpu_available', 'get_device_info', 'clear_gpu_memory', 'get_gpu_memory_usage',
+    'get_array_module', 'xp'
+]

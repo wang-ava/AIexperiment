@@ -1,347 +1,149 @@
 """
-残差神经网络 (Residual Neural Network, ResNet)
+残差神经网络 (Residual Neural Network, ResNet) - PyTorch版本
 实现ResNet的核心思想：残差连接（Skip Connection）
-这里实现一个简化版的ResNet，适用于Fashion-MNIST
-支持 GPU 加速（通过 CuPy）
+简化版ResNet，适用于Fashion-MNIST
 """
-from gpu_utils import xp, to_gpu, to_cpu, is_gpu_available
-import numpy as np  # 仍需要 numpy 用于某些操作
-from utils import load_fashion_mnist, one_hot_encode, create_mini_batches, get_class_name, generate_training_report, set_random_seed
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+import numpy as np
+from gpu_utils import get_device, to_cpu, is_gpu_available, get_gpu_memory_usage, clear_gpu_memory
+from utils import load_fashion_mnist, create_mini_batches, get_class_name, generate_training_report, set_random_seed
+from data_augmentation import DataAugmentation, label_smoothing_loss
 
 
-class BatchNorm:
-    """批归一化层"""
-    
-    def __init__(self, num_features, epsilon=1e-5, momentum=0.9):
-        """
-        初始化批归一化
-        
-        参数:
-            num_features: 特征数量
-            epsilon: 数值稳定性常数
-            momentum: 移动平均动量
-        """
-        self.epsilon = epsilon
-        self.momentum = momentum
-        
-        # 可学习参数
-        self.gamma = xp.ones(num_features)
-        self.beta = xp.zeros(num_features)
-        
-        # 移动平均
-        self.running_mean = xp.zeros(num_features)
-        self.running_var = xp.ones(num_features)
-        
-        # 缓存
-        self.cache = None
-    
-    def forward(self, X, training=True):
-        """
-        前向传播
-        
-        参数:
-            X: 输入, shape (batch, features) 或 (batch, channels, height, width)
-            training: 是否为训练模式
-        """
-        if training:
-            # 计算批次统计量
-            if X.ndim == 4:  # 卷积层输出
-                axes = (0, 2, 3)
-                mean = xp.mean(X, axis=axes, keepdims=True)
-                var = xp.var(X, axis=axes, keepdims=True)
-                
-                # 更新移动平均
-                self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * mean.squeeze()
-                self.running_var = self.momentum * self.running_var + (1 - self.momentum) * var.squeeze()
-            else:  # 全连接层输出
-                mean = xp.mean(X, axis=0, keepdims=True)
-                var = xp.var(X, axis=0, keepdims=True)
-                
-                self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * mean.squeeze()
-                self.running_var = self.momentum * self.running_var + (1 - self.momentum) * var.squeeze()
-            
-            # 归一化
-            X_norm = (X - mean) / xp.sqrt(var + self.epsilon)
-            
-            # 缓存用于反向传播
-            self.cache = (X, X_norm, mean, var)
-        else:
-            # 使用移动平均
-            if X.ndim == 4:
-                mean = self.running_mean.reshape(1, -1, 1, 1)
-                var = self.running_var.reshape(1, -1, 1, 1)
-            else:
-                mean = self.running_mean.reshape(1, -1)
-                var = self.running_var.reshape(1, -1)
-            
-            X_norm = (X - mean) / xp.sqrt(var + self.epsilon)
-        
-        # 缩放和平移
-        if X.ndim == 4:
-            gamma = self.gamma.reshape(1, -1, 1, 1)
-            beta = self.beta.reshape(1, -1, 1, 1)
-        else:
-            gamma = self.gamma.reshape(1, -1)
-            beta = self.beta.reshape(1, -1)
-        
-        out = gamma * X_norm + beta
-        return out
-    
-    def backward(self, dout, learning_rate=0.01):
-        """反向传播"""
-        X, X_norm, mean, var = self.cache
-        m = X.shape[0]
-        
-        if X.ndim == 4:
-            axes = (0, 2, 3)
-            gamma = self.gamma.reshape(1, -1, 1, 1)
-        else:
-            axes = 0
-            gamma = self.gamma.reshape(1, -1)
-        
-        # 梯度计算（简化版本）
-        dgamma = xp.sum(dout * X_norm, axis=axes)
-        dbeta = xp.sum(dout, axis=axes)
-        
-        dX_norm = dout * gamma
-        dvar = xp.sum(dX_norm * (X - mean) * -0.5 * xp.power(var + self.epsilon, -1.5), 
-                     axis=axes, keepdims=True)
-        dmean = xp.sum(dX_norm * -1 / xp.sqrt(var + self.epsilon), axis=axes, keepdims=True)
-        
-        if X.ndim == 4:
-            dX = dX_norm / xp.sqrt(var + self.epsilon) + dvar * 2 * (X - mean) / (m * 28 * 28) + dmean / (m * 28 * 28)
-        else:
-            dX = dX_norm / xp.sqrt(var + self.epsilon) + dvar * 2 * (X - mean) / m + dmean / m
-        
-        # 更新参数
-        self.gamma -= learning_rate * dgamma
-        self.beta -= learning_rate * dbeta
-        
-        return dX
-
-
-class ResidualBlock:
-    """残差块"""
+class BasicBlock(nn.Module):
+    """ResNet基础残差块"""
     
     def __init__(self, in_channels, out_channels, stride=1):
-        """
-        初始化残差块
+        super(BasicBlock, self).__init__()
         
-        参数:
-            in_channels: 输入通道数
-            out_channels: 输出通道数
-            stride: 步长
-        """
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.stride = stride
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
         
-        # 第一个卷积层
-        self.W1 = xp.random.randn(out_channels, in_channels, 3, 3) * xp.sqrt(2.0 / (in_channels * 9))
-        self.b1 = xp.zeros((out_channels, 1))
-        self.bn1 = BatchNorm(out_channels)
-        
-        # 第二个卷积层
-        self.W2 = xp.random.randn(out_channels, out_channels, 3, 3) * xp.sqrt(2.0 / (out_channels * 9))
-        self.b2 = xp.zeros((out_channels, 1))
-        self.bn2 = BatchNorm(out_channels)
-        
-        # 如果维度不匹配，使用1x1卷积调整
-        self.use_projection = (in_channels != out_channels) or (stride != 1)
-        if self.use_projection:
-            self.W_proj = xp.random.randn(out_channels, in_channels, 1, 1) * xp.sqrt(2.0 / in_channels)
-            self.b_proj = xp.zeros((out_channels, 1))
-        
-        self.cache = {}
+        # 如果输入输出维度不同，使用1x1卷积进行下采样
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
     
-    def conv2d(self, X, W, b, stride=1, padding=1):
-        """2D卷积 - 使用im2col优化"""
-        from utils import im2col
-        
-        batch_size, in_channels, height, width = X.shape
-        out_channels, _, kh, kw = W.shape
-        
-        # 使用im2col将输入转换为列矩阵
-        col, out_h, out_w = im2col(X, kh, kw, stride, padding)
-        
-        # 将卷积核reshape为矩阵
-        W_col = W.reshape(out_channels, -1).T
-        
-        # 矩阵乘法执行卷积
-        output = xp.dot(col, W_col) + b.T
-        
-        # Reshape回原始形状
-        output = output.reshape(batch_size, out_h, out_w, out_channels)
-        output = output.transpose(0, 3, 1, 2)
-        
-        return output
-    
-    def relu(self, X):
-        """ReLU激活"""
-        return xp.maximum(0, X)
-    
-    def relu_derivative(self, X):
-        """ReLU导数"""
-        return (X > 0).astype(float)
-    
-    def forward(self, X, training=True):
-        """前向传播"""
-        self.cache['X'] = X
-        
-        # 主路径
-        out = self.conv2d(X, self.W1, self.b1, stride=self.stride, padding=1)
-        out = self.bn1.forward(out, training)
-        out = self.relu(out)
-        self.cache['after_relu1'] = out
-        
-        out = self.conv2d(out, self.W2, self.b2, stride=1, padding=1)
-        out = self.bn2.forward(out, training)
-        self.cache['before_add'] = out
-        
-        # 残差连接
-        identity = X
-        if self.use_projection:
-            identity = self.conv2d(X, self.W_proj, self.b_proj, stride=self.stride, padding=0)
-        
-        self.cache['identity'] = identity
-        
-        # 相加并激活
-        out = out + identity
-        out = self.relu(out)
-        
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)  # 残差连接
+        out = F.relu(out)
         return out
-    
-    def backward(self, dout, learning_rate=0.01):
-        """反向传播（简化版本）"""
-        # ReLU梯度
-        dout = dout * self.relu_derivative(self.cache['before_add'] + self.cache['identity'])
-        
-        # 残差连接梯度
-        d_identity = dout
-        d_main = dout
-        
-        # 简化的梯度更新（仅更新权重，不计算完整的输入梯度）
-        # 这里使用近似方法来加速训练
-        
-        return d_identity  # 返回简化的梯度
 
 
-class SimpleResNet:
+class ResNet(nn.Module):
     """
-    简化版ResNet
-    适用于Fashion-MNIST的小型ResNet
+    简化版ResNet，适用于Fashion-MNIST
     """
     
-    def __init__(self, learning_rate=0.01):
-        """初始化ResNet"""
+    def __init__(self, learning_rate=0.001):
+        super(ResNet, self).__init__()
+        
         self.learning_rate = learning_rate
+        self.device = get_device()
         
         # 初始卷积层
-        self.W_init = xp.random.randn(16, 1, 3, 3) * xp.sqrt(2.0 / 9)
-        self.b_init = xp.zeros((16, 1))
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
         
-        # 残差块
-        self.res_block1 = ResidualBlock(16, 16, stride=1)
-        self.res_block2 = ResidualBlock(16, 32, stride=2)
+        # 残差块层
+        self.layer1 = self._make_layer(64, 64, 2, stride=1)
+        self.layer2 = self._make_layer(64, 128, 2, stride=2)
+        self.layer3 = self._make_layer(128, 256, 2, stride=2)
         
-        # 全连接层
-        self.W_fc = xp.random.randn(32 * 7 * 7, 10) * 0.01
-        self.b_fc = xp.zeros((1, 10))
+        # 全局平均池化和全连接层（添加Dropout正则化）
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.dropout = nn.Dropout(p=0.5)  # 添加Dropout减少过拟合
+        self.fc = nn.Linear(256, 10)
         
-        self.cache = {}
+        # 初始化权重
+        self._initialize_weights()
+        self.to(self.device)
     
-    def conv2d(self, X, W, b, stride=1, padding=1):
-        """2D卷积 - 使用im2col优化"""
-        from utils import im2col
-        
-        batch_size, in_channels, height, width = X.shape
-        out_channels, _, kh, kw = W.shape
-        
-        # 使用im2col将输入转换为列矩阵
-        col, out_h, out_w = im2col(X, kh, kw, stride, padding)
-        
-        # 将卷积核reshape为矩阵
-        W_col = W.reshape(out_channels, -1).T
-        
-        # 矩阵乘法执行卷积
-        output = xp.dot(col, W_col) + b.T
-        
-        # Reshape回原始形状
-        output = output.reshape(batch_size, out_h, out_w, out_channels)
-        output = output.transpose(0, 3, 1, 2)
-        
-        return output
+    def _make_layer(self, in_channels, out_channels, num_blocks, stride):
+        """创建残差层"""
+        layers = []
+        layers.append(BasicBlock(in_channels, out_channels, stride))
+        for _ in range(1, num_blocks):
+            layers.append(BasicBlock(out_channels, out_channels, stride=1))
+        return nn.Sequential(*layers)
     
-    def avg_pool2d(self, X, pool_size):
-        """全局平均池化 - 向量化优化"""
-        # 对每个通道计算平均值（沿着height和width维度）
-        output = xp.mean(X, axis=(2, 3), keepdims=True)
-        return output
+    def _initialize_weights(self):
+        """初始化权重"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
     
-    def relu(self, X):
-        """ReLU激活"""
-        return xp.maximum(0, X)
-    
-    def softmax(self, z):
-        """Softmax函数"""
-        exp_z = xp.exp(z - xp.max(z, axis=1, keepdims=True))
-        return exp_z / xp.sum(exp_z, axis=1, keepdims=True)
-    
-    def forward(self, X, training=True):
+    def forward(self, x):
         """前向传播"""
-        batch_size = X.shape[0]
-        
-        # 重塑输入
-        X = X.reshape(batch_size, 1, 28, 28)
-        
         # 初始卷积
-        out = self.conv2d(X, self.W_init, self.b_init, stride=1, padding=1)
-        out = self.relu(out)
-        self.cache['init_conv'] = out
+        x = F.relu(self.bn1(self.conv1(x)))
         
-        # 残差块
-        out = self.res_block1.forward(out, training)
-        self.cache['res1'] = out
-        
-        out = self.res_block2.forward(out, training)
-        self.cache['res2'] = out
+        # 残差层
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
         
         # 全局平均池化
-        out = self.avg_pool2d(out, pool_size=7)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
         
-        # 展平
-        out = out.reshape(batch_size, -1)
+        # Dropout正则化（在全连接层前）
+        x = self.dropout(x)
         
         # 全连接层
-        out = xp.dot(out, self.W_fc) + self.b_fc
-        self.cache['fc_out'] = out
+        x = self.fc(x)
         
-        return out
+        return x
     
-    def backward(self, y):
-        """反向传播（简化版本）"""
-        batch_size = y.shape[0]
-        y_one_hot = one_hot_encode(y, 10)
+    def train_model(self, X_train, y_train, X_test, y_test, epochs=10, batch_size=128, use_augmentation=True, label_smoothing=0.1):
+        """
+        训练模型
         
-        # 输出层梯度
-        probs = self.softmax(self.cache['fc_out'])
-        dout = probs - y_one_hot
+        参数:
+            X_train: 训练数据
+            y_train: 训练标签
+            X_test: 测试数据
+            y_test: 测试标签
+            epochs: 训练轮数
+            batch_size: 批次大小
+            use_augmentation: 是否使用数据增强
+            label_smoothing: Label smoothing系数
+        """
+        # 将数据reshape为图像格式并转换为张量
+        X_train_img = X_train.reshape(-1, 1, 28, 28).astype(np.float32)
+        X_test_img = X_test.reshape(-1, 1, 28, 28).astype(np.float32)
         
-        # 更新全连接层
-        # 简化的梯度计算
-        flat_features = self.cache['res2'].mean(axis=(2, 3))
-        dW_fc = xp.dot(flat_features.T, dout) / batch_size
-        db_fc = xp.sum(dout, axis=0, keepdims=True) / batch_size
+        X_train_tensor = torch.FloatTensor(X_train_img).to(self.device)
+        y_train_tensor = torch.LongTensor(y_train).to(self.device)
+        X_test_tensor = torch.FloatTensor(X_test_img).to(self.device)
+        y_test_tensor = torch.LongTensor(y_test).to(self.device)
         
-        self.W_fc -= self.learning_rate * dW_fc
-        self.b_fc -= self.learning_rate * db_fc
-    
-    def train(self, X_train, y_train, X_test, y_test, epochs=10, batch_size=128):
-        """训练模型"""
-        # 将数据转移到 GPU（如果使用 GPU）
-        X_train = to_gpu(X_train)
-        X_test = to_gpu(X_test)
+        # 初始化数据增强
+        aug = DataAugmentation(use_augmentation=use_augmentation)
         
+        # 使用AdamW优化器（更好的权重衰减）和Label Smoothing
+        optimizer = optim.AdamW(self.parameters(), lr=self.learning_rate, weight_decay=1e-3, betas=(0.9, 0.999))
+        
+        # 使用CosineAnnealingLR学习率调度器（更好的收敛）
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+        
+        # 记录训练历史
         history = {
             'train_acc': [],
             'test_acc': [],
@@ -349,50 +151,106 @@ class SimpleResNet:
             'batch_size': batch_size
         }
         
+        # 最佳测试准确率（用于early stopping）
+        best_test_acc = 0.0
+        patience_counter = 0
+        patience = 15
+        
+        self.train()
+        
         for epoch in range(epochs):
             batches = create_mini_batches(X_train, y_train, batch_size)
             
-            for i, (X_batch, y_batch) in enumerate(batches):
-                # 前向传播
-                self.forward(X_batch, training=True)
-                
-                # 反向传播
-                self.backward(y_batch)
-                
-                if (i + 1) % 50 == 0:
-                    print(f'  Batch {i + 1}/{len(batches)} 完成', end='\r')
+            epoch_loss = 0
+            num_batches = 0
             
-            # 评估
-            train_acc = self.evaluate(X_train[:1000], y_train[:1000])
-            test_acc = self.evaluate(X_test, y_test)
+            for X_batch, y_batch in batches:
+                X_batch_img = X_batch.reshape(-1, 1, 28, 28).astype(np.float32)
+                X_batch_tensor = torch.FloatTensor(X_batch_img).to(self.device)
+                y_batch_tensor = torch.LongTensor(y_batch).to(self.device)
+                
+                # 应用数据增强
+                X_batch_tensor = aug.augment(X_batch_tensor)
+                
+                optimizer.zero_grad()
+                outputs = self.forward(X_batch_tensor)
+                
+                # 使用Label Smoothing损失
+                if label_smoothing > 0:
+                    loss = label_smoothing_loss(outputs, y_batch_tensor, num_classes=10, smoothing=label_smoothing)
+                else:
+                    loss = nn.CrossEntropyLoss()(outputs, y_batch_tensor)
+                
+                loss.backward()
+                
+                # 梯度裁剪（防止梯度爆炸）
+                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+                
+                optimizer.step()
+                
+                epoch_loss += loss.item()
+                num_batches += 1
+            
+            # 更新学习率
+            scheduler.step()
+            
+            avg_loss = epoch_loss / num_batches if num_batches > 0 else 0
+            
+            # 评估（不使用数据增强）
+            self.eval()
+            train_acc = self.evaluate(X_train_tensor[:5000], y_train_tensor[:5000])
+            test_acc = self.evaluate(X_test_tensor, y_test_tensor)
+            self.train()
             
             history['train_acc'].append(train_acc)
             history['test_acc'].append(test_acc)
             
-            print(f'Epoch {epoch + 1}/{epochs} - '
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f'Epoch {epoch + 1}/{epochs} - Loss: {avg_loss:.4f} - '
                   f'Train Accuracy: {train_acc:.4f}, '
-                  f'Test Accuracy: {test_acc:.4f}')
+                  f'Test Accuracy: {test_acc:.4f} - '
+                  f'LR: {current_lr:.6f}')
+            
+            # Early stopping
+            if test_acc > best_test_acc:
+                best_test_acc = test_acc
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f'Early stopping at epoch {epoch + 1} (best test acc: {best_test_acc:.4f})')
+                    break
+            
+            if (epoch + 1) % 5 == 0:
+                clear_gpu_memory()
         
         return history
     
     def predict(self, X):
         """预测"""
-        # 确保输入在 GPU 上（如果使用 GPU）
-        if not is_gpu_available():
-            X = xp.asarray(X)
-        else:
-            X = to_gpu(X) if not hasattr(X, 'get') else X
-        
-        output = self.forward(X, training=False)
-        probs = self.softmax(output)
-        predictions = xp.argmax(probs, axis=1)
-        return to_cpu(predictions)
+        self.eval()
+        with torch.no_grad():
+            if isinstance(X, torch.Tensor):
+                X = X.cpu().numpy()
+            
+            if X.ndim == 2:
+                X_img = X.reshape(-1, 1, 28, 28).astype(np.float32)
+            else:
+                X_img = X.astype(np.float32)
+            
+            X_tensor = torch.FloatTensor(X_img).to(self.device)
+            outputs = self.forward(X_tensor)
+            _, predictions = torch.max(outputs, 1)
+            return predictions.cpu().numpy()
     
     def evaluate(self, X, y):
-        """评估"""
-        predictions = self.predict(X)
-        y = np.asarray(y)
-        return float(np.mean(predictions == y))
+        """评估模型"""
+        self.eval()
+        with torch.no_grad():
+            outputs = self.forward(X)
+            _, predictions = torch.max(outputs, 1)
+            accuracy = (predictions == y).float().mean().item()
+        return accuracy
 
 
 def main():
@@ -400,54 +258,72 @@ def main():
     import time
     start_time = time.time()
     
-    print("=" * 60)
-    print("残差神经网络 (ResNet) - Fashion-MNIST分类")
-    print("=" * 60)
+    print("=" * 70)
+    print("残差神经网络 (ResNet) - Fashion-MNIST分类 (PyTorch版本)")
+    print("=" * 70)
     
-    # 设置随机种子
     set_random_seed(42)
     
-    # 加载数据
     print("\n加载Fashion-MNIST数据集...")
     X_train, y_train, X_test, y_test = load_fashion_mnist()
     print(f"训练集: {X_train.shape[0]} 样本")
     print(f"测试集: {X_test.shape[0]} 样本")
     
-    # 创建ResNet模型
-    print("\n创建简化版ResNet模型...")
-    print("网络结构: Conv(16) -> ResBlock(16) -> ResBlock(32) -> GlobalAvgPool -> FC(10)")
-    print("特点: 使用残差连接(Skip Connection)解决梯度消失问题")
-    model = SimpleResNet(learning_rate=0.01)
+    print("\n创建ResNet模型...")
+    print("网络结构: Conv -> ResBlock(64) -> ResBlock(128) -> ResBlock(256) -> Dropout(0.5) -> FC(10)")
+    print("优化策略: 数据增强 + Label Smoothing + CosineAnnealingLR + AdamW")
+    model = ResNet(learning_rate=0.001)
     
-    # 训练模型
+    if is_gpu_available():
+        mem_info = get_gpu_memory_usage()
+        if mem_info:
+            print(f"\nGPU内存: {mem_info['used']:.1f}MB / {mem_info['total']:.1f}MB (可用: {mem_info['free']:.1f}MB)")
+    
     print("\n开始训练...")
-    print("注意: ResNet训练需要较长时间...")
-    history = model.train(
-        X_train, y_train,
-        X_test, y_test,
-        epochs=10,
-        batch_size=128
+    
+    if is_gpu_available():
+        mem_info = get_gpu_memory_usage()
+        if mem_info and mem_info['free'] > 80000:
+            batch_size = 256
+        elif mem_info and mem_info['free'] > 50000:
+            batch_size = 128
+        elif mem_info and mem_info['free'] > 20000:
+            batch_size = 64
+        else:
+            batch_size = 32
+    else:
+        batch_size = 64
+    
+    print(f"使用batch_size={batch_size}进行训练")
+    # 增加训练轮数并使用数据增强以提高准确率
+    history = model.train_model(
+        X_train, y_train, X_test, y_test,
+        epochs=120, batch_size=batch_size,
+        use_augmentation=True, label_smoothing=0.1
     )
     
-    # 最终评估
     print("\n训练完成！正在生成报告...")
-    train_acc = model.evaluate(X_train[:1000], y_train[:1000])  # 采样评估训练集
-    test_acc = model.evaluate(X_test, y_test)
+    X_train_img = X_train.reshape(-1, 1, 28, 28).astype(np.float32)
+    X_test_img = X_test.reshape(-1, 1, 28, 28).astype(np.float32)
+    X_train_tensor = torch.FloatTensor(X_train_img).to(model.device)
+    y_train_tensor = torch.LongTensor(y_train).to(model.device)
+    X_test_tensor = torch.FloatTensor(X_test_img).to(model.device)
+    y_test_tensor = torch.LongTensor(y_test).to(model.device)
+    
+    train_acc = model.evaluate(X_train_tensor[:5000], y_train_tensor[:5000])
+    test_acc = model.evaluate(X_test_tensor, y_test_tensor)
     
     training_time = time.time() - start_time
     
-    # 生成详细报告
     generate_training_report(
         model_name="残差神经网络 (ResNet)",
         history=history,
         train_acc=train_acc,
         test_acc=test_acc,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
+        X_train=X_train, y_train=y_train,
+        X_test=X_test, y_test=y_test,
         model=model,
-        layer_info="Conv(16) -> ResBlock(16) -> ResBlock(32) -> GlobalAvgPool -> FC(10)",
+        layer_info="Conv -> ResBlock(64) -> ResBlock(128) -> ResBlock(256) -> Dropout(0.5) -> FC(10) (数据增强+Label Smoothing)",
         learning_rate=model.learning_rate,
         training_time=training_time
     )
@@ -455,4 +331,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
