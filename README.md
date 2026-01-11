@@ -1,417 +1,201 @@
-# Fashion-MNIST 神经网络实现集合
+Fashion-MNIST 神经网络实验集合（PyTorch）
 
-本项目包含多种手写神经网络实现，用于Fashion-MNIST图像分类任务。所有实现均使用纯NumPy完成，不依赖深度学习框架。
+本项目基于 Fashion-MNIST 数据集，使用 PyTorch 实现并对比多种经典/高性能神经网络结构，支持 CPU/GPU 自动切换、数据增强、以及训练完成自动生成文本报告，便于做实验记录与模型对比。
 
-## 项目结构
+适合：想用一个小而完整的项目，系统性跑通“数据加载 → 训练 → 评估 → 报告 → 多模型横向对比”的同学。
 
-```
+主要特性
+
+多模型实现与对比：MLP / CNN / LeNet-5 / ResNet / Wide ResNet / DenseNet / Capsule Network
+
+一键运行 & 交互菜单：run.py 支持交互选择或自动跑全套模型
+
+自动生成实验报告：每个模型训练后生成单独报告，并可生成汇总对比报告（保存在 reports/）
+
+GPU 自动加速：自动检测 CUDA，可用则使用 GPU（见 gpu_utils.py）
+
+数据增强支持：旋转、平移、随机裁剪、水平翻转、Random Erasing 等（见 data_augmentation.py）
+
+可复现实验：统一随机种子（见 utils.set_random_seed）
+
+模型列表
+
+仓库内包含以下模型脚本（均可单独运行）：
+
+mlp.py：多层感知机（MLP，全连接 + Dropout 等）
+
+cnn.py：标准卷积网络（Conv + BN + Pool + Dropout 等）
+
+lenet.py：LeNet-5 风格网络
+
+resnet.py：残差网络（ResNet）
+
+wide_resnet.py：Wide ResNet（宽残差网络，支持更强正则化/增强策略）
+
+densenet.py：DenseNet-BC
+
+capsule_network.py：Capsule Network（胶囊网络）
+
+说明：run_new_models.py 专门用于跑 WideResNet / DenseNet / Capsule 这类高准确率模型组合，并在最后生成对比汇总报告。
+
+项目结构
 .
-├── utils.py                    # 数据加载和预处理工具
-├── gpu_utils.py                # GPU支持工具（自动检测CUDA/CuPy）
-├── mlp.py                      # 多层感知机 (MLP)
-├── cnn.py                      # 卷积神经网络 (CNN)
-├── lenet.py                    # LeNet-5网络
-├── resnet.py                   # 残差网络 (ResNet)
-├── wide_resnet.py              # Wide ResNet-28-10 + Random Erasing (96.3% benchmark)
-├── densenet.py                 # DenseNet-BC (95.4% benchmark)
-├── capsule_network.py           # Capsule Network (93.6% benchmark)
-├── run.py                      # 交互式启动器 ⭐ 推荐使用
-├── run_new_models.py           # 一键运行所有高准确率模型
-├── generate_summary_report.py  # 生成模型对比总结报告
-├── test_data.py                # 数据加载测试脚本
-├── requirements.txt            # 依赖包
-├── README.md                   # 本文件
-└── NEW_MODELS_README.md        # 高准确率模型详细说明
+├── run.py                      # 入口：交互式菜单 / 自动运行全模型
+├── run_new_models.py           # 入口：运行高准确率模型组合（WideResNet/DenseNet/CapsNet）
+├── utils.py                    # 数据集加载、batch生成、类别名、训练报告/汇总报告工具
+├── gpu_utils.py                # GPU 检测、设备管理、显存信息等
+├── data_augmentation.py        # 数据增强策略 + label smoothing loss
+├── mlp.py                      # MLP 模型
+├── cnn.py                      # CNN 模型
+├── lenet.py                    # LeNet-5 模型
+├── resnet.py                   # ResNet 模型
+├── wide_resnet.py              # Wide ResNet 模型
+├── densenet.py                 # DenseNet-BC 模型
+├── capsule_network.py          # Capsule Network 模型
+├── test_data.py                # 数据加载测试（检查shape/范围/类别分布等）
+├── generate_summary_report.py  # 汇总报告脚本（与 utils 内功能类似，可独立用）
+├── requirements.txt            # 依赖
+└── reports/                    # 训练输出报告（每次训练生成txt，带时间戳）
 
-dataset/                        # 需要下载Fashion-MNIST数据集
-├── train-images-idx3-ubyte.gz
-├── train-labels-idx1-ubyte.gz
-├── test-images-idx3-ubyte.gz
-└── test-labels-idx1-ubyte.gz
-```
-
-## 数据集说明
-
-Fashion-MNIST是一个类似MNIST的时尚产品图像数据集，包含：
-- **训练集**: 60,000张图像
-- **测试集**: 10,000张图像
-- **图像尺寸**: 28x28灰度图像
-- **类别数**: 10个类别
-
-### 类别标签
-
-| 标签 | 类别名称 (英文) | 类别名称 (中文) |
-|------|----------------|----------------|
-| 0    | T-shirt/top    | T恤/上衣       |
-| 1    | Trouser        | 裤子           |
-| 2    | Pullover       | 套头衫         |
-| 3    | Dress          | 连衣裙         |
-| 4    | Coat           | 外套           |
-| 5    | Sandal         | 凉鞋           |
-| 6    | Shirt          | 衬衫           |
-| 7    | Sneaker        | 运动鞋         |
-| 8    | Bag            | 包             |
-| 9    | Ankle boot     | 短靴           |
-
-## 安装依赖
-
-```bash
-cd code
+环境依赖与安装
+1) 安装依赖
 pip install -r requirements.txt
-```
 
-## 快速开始
 
-### 方式一：使用交互式启动器（推荐）
+依赖主要是：
 
-```bash
+numpy
+
+torch
+
+torchvision
+
+如果你只需要 CPU 版本 PyTorch，可按 requirements.txt 中注释提示安装 CPU-only 版本。
+
+数据集准备（重要）
+
+本项目通过 utils.load_fashion_mnist() 读取 Fashion-MNIST 的 gzip 原始文件（idx 格式 .gz），并会自动在以下路径尝试寻找数据集目录：
+
+./dataset
+
+../dataset
+
+（以及与 utils.py 同目录/上级目录下的 dataset）
+
+你需要准备一个 dataset/ 文件夹，并放入以下文件（标准命名）：
+
+train-images-idx3-ubyte.gz
+
+train-labels-idx1-ubyte.gz
+
+t10k-images-idx3-ubyte.gz
+
+t10k-labels-idx1-ubyte.gz
+
+兼容性说明：
+
+测试集文件名也兼容 test-images-idx3-ubyte.gz / test-labels-idx1-ubyte.gz（代码会自动 fallback）。
+
+快速开始
+方式 A：交互菜单运行（推荐）
 python run.py
-```
 
-这将启动一个交互式菜单，让你选择要训练的模型：
 
-```
-============================================================
-               Fashion-MNIST 神经网络训练
-============================================================
+你可以在菜单中选择：
 
-请选择要训练的模型：
+单独训练某个模型
 
-  1. MLP      - 多层感知机 (最快, 推荐入门)
-  2. CNN      - 卷积神经网络 (较慢)
-  3. LeNet-5  - 经典LeNet架构 (中等)
-  4. ResNet   - 残差网络 (较慢)
-  5. Wide ResNet-28-10 + Random Erasing (96.3% benchmark, 最慢)
-  6. DenseNet-BC - Dense连接网络 (95.4% benchmark, 很慢)
-  7. Capsule Network - 胶囊网络 (93.6% benchmark, 很慢)
-  8. 测试数据加载
-  9. 运行所有新模型 (5-7)
-  0. 退出
-```
+跑“全部模型”（会逐个训练并生成汇总报告）
 
-### 方式二：直接运行指定模型
+测试数据加载（确认 dataset 是否正确）
 
-你也可以直接运行单个模型的脚本（见下面的详细说明）。
+方式 B：自动跑全模型（无人值守）
+python run.py --auto
 
-## 训练报告
 
-每个模型训练完成后，都会自动生成详细的训练报告，包括：
+自动模式默认会依次运行：
+MLP → CNN → LeNet-5 → ResNet → WideResNet → DenseNet → Capsule Network
 
-1. **模型配置**: 网络结构、训练参数、学习率等
-2. **数据集信息**: 训练集和测试集大小
-3. **训练过程**: 初始准确率、最高准确率、准确率提升等
-4. **最终性能**: 训练和测试准确率、过拟合程度
-5. **各类别性能**: 每个类别的识别准确率
-6. **预测示例**: 10个随机样本的预测结果
-7. **总结建议**: 模型性能评级和改进建议
+如需在自动模式中额外包含“数据加载测试”：
 
-报告样例：
-```
-======================================================================
-                  多层感知机 (MLP) 训练报告
-======================================================================
+python run.py --auto --test
 
-【模型配置】
-----------------------------------------------------------------------
-  网络结构: 784 -> 256 -> 128 -> 10
-  训练轮数: 20
-  批次大小: 128
-  学习率: 0.1
-  训练时间: 142.35 秒 (2.37 分钟)
-
-【数据集信息】
-----------------------------------------------------------------------
-  训练样本数: 60,000
-  测试样本数: 10,000
-  输入维度: 784
-  类别数量: 10
-
-【训练过程】
-----------------------------------------------------------------------
-  初始训练准确率: 0.7123 (71.23%)
-  初始测试准确率: 0.7245 (72.45%)
-  最高训练准确率: 0.8912 (89.12%)
-  最高测试准确率: 0.8823 (88.23%)
-  准确率提升: 0.1578 (15.78%)
-
-【最终性能】
-----------------------------------------------------------------------
-  训练准确率: 0.8912 (89.12%)
-  测试准确率: 0.8823 (88.23%)
-  过拟合程度: 0.0089 (0.89%)
-
-【各类别性能】
-----------------------------------------------------------------------
-  类别            准确率     正确/总数
-  ------------------------------------------
-  T-shirt/top     0.8950     895/1000
-  Trouser         0.9820     982/1000
-  ...
-
-【预测示例】
-----------------------------------------------------------------------
-  样本 # 2341: 真实=Pullover        | 预测=Pullover        ✓
-  样本 # 7823: 真实=Sneaker         | 预测=Ankle boot      ✗
-  ...
-
-【总结】
-----------------------------------------------------------------------
-  模型性能评级: 良好
-  训练状态: 训练正常
-  建议: 模型表现良好，可以投入使用
-```
-
-## 运行说明
-
-### 1. 多层感知机 (MLP)
-
-最简单的全连接神经网络，适合入门学习。
-
-```bash
-python mlp.py
-```
-
-**网络结构**:
-- 输入层: 784个神经元 (28×28)
-- 隐藏层1: 256个神经元 + ReLU激活
-- 隐藏层2: 128个神经元 + ReLU激活
-- 输出层: 10个神经元 + Softmax激活
-
-**特点**:
-- 使用反向传播算法训练
-- He初始化权重
-- 支持mini-batch训练
-- 预期准确率: ~88%
-
-**训练时间**: 约2-3分钟 (20 epochs)
-
----
-
-### 2. 卷积神经网络 (CNN)
-
-经典的卷积神经网络，适合图像分类任务。
-
-```bash
-python cnn.py
-```
-
-**网络结构**:
-- Conv1: 16个3×3卷积核 + ReLU + 2×2最大池化
-- Conv2: 32个3×3卷积核 + ReLU + 2×2最大池化
-- Flatten层
-- FC1: 128个神经元 + ReLU
-- FC2: 10个神经元 + Softmax
-
-**特点**:
-- 手写卷积和池化操作
-- 卷积层提取空间特征
-- 预期准确率: ~85-88%
-
-**训练时间**: 约10-15分钟 (5 epochs)
-**注意**: 由于是纯NumPy实现，速度较慢
-
----
-
-### 3. LeNet-5
-
-Yann LeCun于1998年提出的经典CNN架构。
-
-```bash
-python lenet.py
-```
-
-**网络结构**:
-- Conv1: 6个5×5卷积核 + Sigmoid + 2×2平均池化
-- Conv2: 16个5×5卷积核 + Sigmoid + 2×2平均池化
-- FC1: 120个神经元 + Sigmoid
-- FC2: 84个神经元 + Sigmoid
-- FC3: 10个神经元 + Softmax
-
-**特点**:
-- 使用Sigmoid激活函数（原始设计）
-- 平均池化而非最大池化
-- 经典的深度学习架构
-- 预期准确率: ~85-87%
-
-**训练时间**: 约8-12分钟 (10 epochs)
-
----
-
-### 4. 残差网络 (ResNet)
-
-引入残差连接（Skip Connection）的现代网络架构。
-
-```bash
-python resnet.py
-```
-
-**网络结构**:
-- 初始Conv: 16个3×3卷积核
-- ResBlock1: 16通道残差块
-- ResBlock2: 32通道残差块 (步长2)
-- 全局平均池化
-- 全连接层: 10个神经元
-
-**特点**:
-- 残差连接解决梯度消失问题
-- 批归一化加速训练
-- 可以训练更深的网络
-- 预期准确率: ~86-89%
-
-**训练时间**: 约10-15分钟 (10 epochs)
-
----
-
-### 5. Wide ResNet-28-10 + Random Erasing
-
-基于Fashion-MNIST官方Benchmark的高准确率模型（目标96.3%）。
-
-```bash
-python wide_resnet.py
-# 或使用交互式菜单选择选项 5
-```
-
-**网络结构**:
-- 28层深度，宽度因子10
-- Random Erasing数据增强
-- Batch Normalization + Dropout
-
-**特点**:
-- 增加网络宽度而非深度
-- 使用Random Erasing数据增强技术
-- 预期准确率: ~96% (接近官方benchmark)
-
-**训练时间**: 约30-60分钟 (取决于硬件)
-
-**参考**: 详见 `NEW_MODELS_README.md`
-
----
-
-### 6. DenseNet-BC
-
-Dense连接网络，特征重用，参数高效（目标95.4%）。
-
-```bash
-python densenet.py
-# 或使用交互式菜单选择选项 6
-```
-
-**网络结构**:
-- Dense连接：每层与前面所有层相连
-- Bottleneck结构 (BC)
-- Compression压缩
-
-**特点**:
-- Dense连接促进特征重用
-- 减少梯度消失问题
-- 参数效率高
-- 预期准确率: ~95% (接近官方benchmark)
-
-**训练时间**: 约30-60分钟
-
-**参考**: 详见 `NEW_MODELS_README.md`
-
----
-
-### 7. Capsule Network
-
-Hinton提出的新颖架构，使用向量神经元和动态路由（目标93.6%）。
-
-```bash
-python capsule_network.py
-# 或使用交互式菜单选择选项 7
-```
-
-**网络结构**:
-- Primary Capsule层
-- Digit Capsule层
-- Dynamic Routing算法
-
-**特点**:
-- 向量神经元（Capsule）保留空间关系
-- Dynamic Routing算法
-- Margin Loss
-- 预期准确率: ~93-94% (接近官方benchmark)
-
-**训练时间**: 约30-60分钟
-
-**参考**: 详见 `NEW_MODELS_README.md`
-
----
-
-### 一键运行所有高准确率模型
-
-```bash
+方式 C：只跑高准确率模型组合
 python run_new_models.py
-```
 
-这个脚本会依次训练 Wide ResNet、DenseNet 和 Capsule Network，并自动生成总结报告。
 
----
+会依次运行：
 
-## 网络对比
+Wide ResNet
 
-| 网络类型 | 参数量 | 训练速度 | 准确率 | 特点 |
-|---------|--------|---------|--------|------|
-| MLP     | 约250K | 最快    | ~88%   | 简单，适合入门 |
-| CNN     | 约100K | 较慢    | ~85-88%| 卷积特征提取 |
-| LeNet-5 | 约60K  | 中等    | ~85-87%| 经典架构 |
-| ResNet  | 约150K | 较慢    | ~86-89%| 残差连接 |
-| Wide ResNet | 约1M+ | 最慢 | ~96% | 宽度增强，Random Erasing |
-| DenseNet-BC | 约500K+ | 很慢 | ~95% | Dense连接，特征重用 |
-| Capsule Network | 约300K+ | 很慢 | ~93-94% | 向量神经元，动态路由 |
+DenseNet-BC
 
-## 代码特点
+Capsule Network
 
-### ✅ 优点
+并在最后生成一个总结报告用于横向对比。
 
-1. **纯NumPy实现**: 所有代码仅使用NumPy，易于理解神经网络原理
-2. **详细注释**: 每个函数都有清晰的文档说明
-3. **模块化设计**: 每个网络独立文件，便于学习和修改
-4. **完整实现**: 包含前向传播、反向传播、训练、评估等完整流程
-5. **教育价值**: 适合学习深度学习基础原理
+方式 D：单独运行某个模型脚本
 
-### ⚠️ 限制
+例如：
 
-1. **性能**: 纯Python实现，速度远慢于GPU加速的框架
-2. **简化**: 某些实现为了清晰性进行了简化
-3. **优化**: 未使用高级优化技巧（如动量、学习率衰减等）
+python mlp.py
+python cnn.py
+python resnet.py
 
-## 性能优化建议
+输出：训练报告与汇总报告
 
-如果你想提高训练速度，可以：
+训练结束后会在 reports/ 下生成文本报告（带时间戳），内容通常包括：
 
-1. **减少数据量**: 使用部分训练数据进行实验
-2. **减少epoch**: 先用少量epoch测试代码
-3. **增大batch_size**: 在内存允许的情况下增大batch大小
-4. **使用框架**: 生产环境建议使用PyTorch、TensorFlow等框架
+模型信息（结构描述、关键超参如学习率、训练轮数等）
 
-## 扩展建议
+数据集信息（样本数、输入维度、类别数等）
 
-可以尝试以下改进：
+训练过程摘要（初始/最高/最终准确率、提升幅度等）
 
-1. **添加正则化**: L2正则化、Dropout等
-2. **学习率调度**: 实现学习率衰减
-3. **数据增强**: 随机旋转、翻转等
-4. **优化器**: 实现Adam、RMSprop等优化器
-5. **可视化**: 添加训练曲线、特征图可视化
+训练耗时（秒/分钟）
 
-## 参考资料
+当你运行“全部模型”或 run_new_models.py 时，还会生成一个汇总报告，对比各模型：
 
-- [Fashion-MNIST官方仓库](https://github.com/zalandoresearch/fashion-mnist)
-- [Fashion-MNIST论文](https://arxiv.org/abs/1708.07747)
-- LeNet-5论文: "Gradient-Based Learning Applied to Document Recognition"
-- ResNet论文: "Deep Residual Learning for Image Recognition"
+训练准确率 / 测试准确率
 
-## 许可证
+耗时
 
-本项目代码仅供学习使用。
+最佳模型标记
 
-## 作者
+生成了哪些报告文件
 
-AI Assistant
+常见问题
+1) 提示找不到数据集目录
 
----
+请确认：
 
-**开始你的深度学习之旅吧！** 🚀
+你已创建 dataset/ 文件夹（在项目根目录或上级目录）
 
+dataset/ 下存在 4 个 .gz 文件（命名见上文）
+
+你也可以先运行：
+
+python test_data.py
+
+
+它会输出数据 shape、取值范围、类别分布，帮助定位问题。
+
+2) GPU 显存不足 / 训练太慢
+
+可尝试：
+
+关闭其他占用 GPU 的程序
+
+调小 batch size（各模型脚本内一般有默认配置可改）
+
+先在 CPU 上验证流程跑通，再切 GPU 跑完整实验
+
+参考与致谢（可选）
+
+Fashion-MNIST（Zalando Research）
+
+LeNet-5 / ResNet / DenseNet / Wide ResNet / Capsule Network 相关论文与经典实现思路
+
+许可证
+
+本项目代码仅用于学习与实验对比用途。
